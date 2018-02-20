@@ -7,6 +7,12 @@ import Svg.Attributes
 import Svg.Events exposing (onClick)
 import Debug
 import Time exposing (Time, second)
+import Random.Pcg exposing (..)
+import Random
+
+
+type alias Model =
+    { time : Time, grid : Grid }
 
 
 type alias Grid =
@@ -28,21 +34,44 @@ type alias Coordinate =
 
 
 type alias World =
-    { grid : Grid }
+    { time : Time, grid : Grid, seed : Int }
+
+
+type Msg
+    = Tick Time
+    | RandN Int
+    | Reset
+
+
+type Status
+    = Dead
+    | Alive
 
 
 
 -- Model
 
 
+initSeed : Int -> Seed
+initSeed n =
+    initialSeed n
+
+
 initialWorld : World
 initialWorld =
-    { grid = buildGrid 10 10 }
+    { time = 0, grid = buildGridWithSeed 10 10 10, seed = 1 }
 
 
-buildCell : Int -> Int -> Bool -> Cell
-buildCell xPosition yPosition class =
-    { position = ( xPosition, yPosition ), alive = class }
+buildCell : Int -> Int -> Int -> Cell
+buildCell xPosition yPosition status =
+    let
+        newStatus =
+            if status == 1 then
+                True
+            else
+                False
+    in
+        { position = ( xPosition, yPosition ), alive = newStatus }
 
 
 addCellToRow : Cell -> Row -> Row
@@ -50,17 +79,21 @@ addCellToRow cell row =
     cell :: row
 
 
-buildRow : Int -> Int -> Row
-buildRow length rowNumber =
-    recursiveRowBuilder length rowNumber []
+buildRow : Int -> Int -> Int -> Seed -> Row
+buildRow length rowNumber n seed =
+    recursiveRowBuilder length rowNumber n seed []
 
 
-recursiveRowBuilder : Int -> Int -> Row -> Row
-recursiveRowBuilder xCoord yCoord tempRow =
+recursiveRowBuilder : Int -> Int -> Int -> Seed -> Row -> Row
+recursiveRowBuilder xCoord yCoord status seed tempRow =
     if xCoord <= 0 then
         tempRow
     else
-        recursiveRowBuilder (xCoord - 1) yCoord (addCellToRow (buildCell xCoord yCoord True) tempRow)
+        let
+            ( n, nextSeed ) =
+                Random.Pcg.step (int 1 2) seed
+        in
+            recursiveRowBuilder (xCoord - 1) yCoord n nextSeed (addCellToRow (buildCell xCoord yCoord status) tempRow)
 
 
 addRowToGrid : Grid -> Row -> Grid
@@ -68,20 +101,30 @@ addRowToGrid grid row =
     row :: grid
 
 
-recursiveGridBuilder : Int -> Int -> Grid -> Grid
-recursiveGridBuilder xCoord yCoord tempGrid =
-    if yCoord <= 0 then
-        tempGrid
-    else
-        buildRow xCoord yCoord
-            |> addRowToGrid tempGrid
-            |> recursiveGridBuilder xCoord
-                (yCoord - 1)
+recursiveGridBuilder : Int -> Int -> Int -> Seed -> Grid -> Grid
+recursiveGridBuilder xCoord yCoord n seed tempGrid =
+    let
+        ( nextStatus, newSeed ) =
+            Random.Pcg.step (int 1 2) seed
+    in
+        if yCoord <= 0 then
+            tempGrid
+        else
+            buildRow xCoord yCoord n seed
+                |> addRowToGrid tempGrid
+                |> recursiveGridBuilder xCoord (yCoord - 1) nextStatus newSeed
 
 
-buildGrid : Int -> Int -> Grid
-buildGrid columns rows =
-    recursiveGridBuilder columns rows []
+buildGridWithSeed : Int -> Int -> Int -> Grid
+buildGridWithSeed columns rows n =
+    let
+        seed0 =
+            initSeed n
+
+        ( status, seed1 ) =
+            Random.Pcg.step (int 1 2) seed0
+    in
+        recursiveGridBuilder columns rows status seed1 []
 
 
 
@@ -96,16 +139,20 @@ cellColor cell =
         "white"
 
 
-viewGridSvg : Grid -> List (Svg.Svg Msg)
+viewGridSvg : Grid -> Html Msg
 viewGridSvg grid =
     let
         svgGrid =
             buildSvgGrid [] grid
     in
-        [ Svg.svg
-            [ Svg.Attributes.width "1000", Svg.Attributes.height "1000" ]
-            svgGrid
-        ]
+        div []
+            [ div []
+                [ Svg.svg
+                    [ Svg.Attributes.width "1000", Svg.Attributes.height "1000" ]
+                    svgGrid
+                ]
+            , button [ onClick Reset ] [ text "Reset" ]
+            ]
 
 
 buildSvgGrid : List (Svg.Svg Msg) -> Grid -> List (Svg.Svg Msg)
@@ -132,7 +179,6 @@ makeRect cell =
             , Svg.Attributes.fill (cellColor cell)
             , Svg.Attributes.stroke "black"
             , Svg.Attributes.strokeWidth "2"
-            , Svg.Events.onClick Togglecell
             ]
             []
 
@@ -148,48 +194,76 @@ makeId position =
 
 
 view : World -> Html Msg
-view world =
-    viewGridSvg world.grid
-        |> div []
+view model =
+    let
+        switch =
+            cos (turns (Time.inMinutes model.time))
+    in
+        model.grid
+            |> toggleGrid
+            |> viewGridSvg
+
+
+toggleGrid : Grid -> Grid
+toggleGrid grid =
+    List.map toggleRow grid
+
+
+toggleRow : Row -> Row
+toggleRow row =
+    List.map toggleCell row
+
+
+toggleCell : Cell -> Cell
+toggleCell cell =
+    let
+        ( x, y ) =
+            cell.position
+
+        newLabel =
+            not cell.alive
+    in
+        { cell | alive = newLabel }
 
 
 
 -- Update
 
 
-type Msg
-    = Togglecell
-    | Tick Time
+update : Msg -> World -> ( World, Cmd Msg )
+update msg world =
+    case msg of
+        Tick newTime ->
+            let
+                newModel =
+                    { world | time = newTime, grid = (toggleGrid world.grid) }
+            in
+                ( newModel, Cmd.none )
+
+        Reset ->
+            ( world, Random.generate RandN (Random.int 1 10021121) )
+
+        RandN n ->
+            let
+                newModel =
+                    { world | grid = (buildGridWithSeed 10 10 n) }
+            in
+                ( newModel, Cmd.none )
 
 
-subscriptions : Time -> Sub Msg
+subscriptions : World -> Sub Msg
 subscriptions model =
     Time.every second Tick
 
 
-update : Msg -> World -> World
-update msg world =
-    case msg of
-        Togglecell ->
-            { world | grid = (toggle world.grid) }
-
-
-toggle : Grid -> Grid
-toggle grid =
-    List.map toggleRow grid
-
-
-toggleRow row =
-    List.map toggleCell row
-
-
-toggleCell cell =
-    { cell | alive = (not cell.alive) }
+init : ( World, Cmd Msg )
+init =
+    ( initialWorld, Cmd.none )
 
 
 main =
     Html.program
-        { init = initialWorld
+        { init = init
         , view = view
         , update = update
         , subscriptions = subscriptions
